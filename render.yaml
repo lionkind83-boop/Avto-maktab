@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: avtomaktab-boshqaruv
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: BOOTSTRAP_ADMIN_PASSWORD
+        sync: false
+      - key: BOOTSTRAP_ADMIN_USERNAME
+        value: admin
+      - key: REQUIRE_POSTGRES
+        value: "1"
+      - key: HTTPS_ONLY
+        value: "1"
+      - key: PYTHONUNBUFFERED
+        value: "1"
