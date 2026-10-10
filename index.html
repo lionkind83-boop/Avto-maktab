@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+
+<html lang="uz-Cyrl">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width,initial-scale=1" name="viewport"/>
+<meta content="#101b31" name="theme-color"/>
+<title>АВТОМАКТАБ — онлайн бошқарув тизими</title>
+<link href="/style.css" rel="stylesheet"/><script defer="" src="/app.js"></script></head>
+<body><div class="login-screen" hidden="" id="loginOverlay"><div class="login-card"><div class="login-brand"><div class="brand-icon">А</div><div><strong>АВТОМАКТАБ</strong><small>ОНЛАЙН БОШҚАРУВ ТИЗИМИ</small></div></div><h1>Тизимга кириш</h1><p>Ўз аккаунтингиз билан киринг</p><form id="loginForm"><label for="loginUser">Логин</label><input autocomplete="username" class="input" id="loginUser" placeholder="admin" required="" type="text"/><label for="loginPassword">Парол</label><input autocomplete="current-password" class="input" id="loginPassword" placeholder="••••••••••••" required="" type="password"/><div class="login-error" id="loginError" role="alert"></div><button class="btn primary" id="loginBtn" type="submit">Кириш →</button></form><div class="login-note">Кириш маълумотлари мактаб директори томонидан берилади.</div></div></div>
+<div class="layout" hidden="" id="mainLayout"><aside class="sidebar" id="sidebar">
+<div class="brand"><div class="brand-icon">А</div><div><div class="brand-name">АВТОМАКТАБ</div><div class="brand-sub">БОШҚАРУВ ТИЗИМИ</div></div></div>
+<div class="nav-caption">БОШҚАРУВ ПАНЕЛИ</div><nav class="nav" id="navigation"></nav>
+<div class="sidebar-bottom"><span class="demo-tag" id="sidebarRole">● ОНЛАЙН ТИЗИМ</span><small>Маълумотлар марказий базага сақланади. Ходимларга алоҳида рухсатлар берилган.</small></div>
+</aside><div class="screen-dim" id="screenDim"></div>
+<div class="app"><header class="topbar"><div style="display:flex;align-items:center;gap:12px"><button aria-label="Меню" class="mobile-menu" id="menuToggle">☰</button><div class="title"><h1 id="pageTitle">Асосий</h1><p id="pageSubtitle">Автомактабингиз фаолияти бир жойда</p></div></div><div class="top-actions"><span class="username-label" id="loginNameLabel"></span><span class="date-chip" id="dateChip"></span><button class="btn primary" data-action="add-student" id="topAddStudent">＋ Янги ўқувчи</button><div class="avatar" id="loginAvatar" title="Фойдаланувчи">—</div></div></header>
+<main class="main"><div id="appContent"></div><div class="footer-note">АВТОМАКТАБ бошқарув тизими · Онлайн тизим · 2026</div></main></div></div>
+<div id="modalHost"></div><div id="toastHost"></div>
+</body>
+</html>
