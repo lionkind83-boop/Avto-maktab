@@ -26,7 +26,7 @@ from urllib.parse import urlsplit
 BASE = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get('DATA_DIR', str(BASE / 'data')))
 DB = DATA_DIR / 'avtomaktab.sqlite3'
-PUBLIC = BASE / 'public'
+PUBLIC = BASE  # assets live at repository root
 ROLES = {'director', 'accountant', 'cashier', 'teacher'}
 PERMS = {
  'director': {'students_write', 'groups_write', 'payments_read', 'payments_write', 'payments_void', 'attendance_write', 'reports', 'backup', 'users', 'audit'},
