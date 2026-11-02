@@ -146,14 +146,14 @@ def retry_unread(chat_id):
                 if seen(link):
                     status = "duplicate"
                 else:
-                    send(TARGET, "🧾 Қайта ўқилган фискал чек\\n" + link)
+                    send(TARGET, "🧾 Қайта ўқилган фискал чек\n" + link)
                     remember(link)
                     status = "read"
             record_result({"message_id": message_id}, status, link or "", file_id)
             updated += 1
         except Exception:
             logging.exception("Retry failed: message_id=%s", message_id)
-    send(chat_id, f"🔄 Қайта текширилди: {updated}/{min(len(rows),5)}. Қолганлари учун /retry ни яна юборинг.\\n/status — натижалар.")
+    send(chat_id, f"🔄 Қайта текширилди: {updated}/{min(len(rows),5)}. Қолганлари учун /retry ни яна юборинг.\n/status — натижалар.")
 
 def report():
     with sqlite3.connect(DB) as db:
@@ -221,9 +221,9 @@ def webhook():
         if not rows:
             send(chat_id, "✅ Ўқилмаган чеклар йўқ.")
         else:
-            send(chat_id, "❌ Ўқилмаган чек хабар ID лари:\\n" +
-                 "\\n".join(f"• {mid}" + ("" if fid else " (қайта юбориш керак)") for mid, fid in rows) +
-                 "\\n\\nҚайта текшириш: /retry")
+            send(chat_id, "❌ Ўқилмаган чек хабар ID лари:\n" +
+                 "\n".join(f"• {mid}" + ("" if fid else " (қайта юбориш керак)") for mid, fid in rows) +
+                 "\n\nҚайта текшириш: /retry")
         return {"ok": True}
     if text.strip().split("@")[0] == "/retry":
         retry_unread(chat_id)
@@ -239,7 +239,7 @@ def webhook():
     if not link:
         if msg.get("photo") or msg.get("document"):
             status = locals().get("qr_status", "unreadable")
-            record_result(msg, status)
+            record_result(msg, status, file_id=locals().get("file_id"))
             logging.info("Receipt QR result: message_id=%s status=%s", msg.get("message_id"), status)
             if status == "non_ofd":
                 send(chat_id, "⚠️ QR-код ўқилди, лекин OFD фискал чек ҳаволаси эмас. Фискал чек QR-кодини юборинг.")
