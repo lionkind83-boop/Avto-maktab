@@ -2,6 +2,7 @@ import os, re, sqlite3, io, logging, hashlib, time
 from urllib.parse import urlparse, parse_qs, urlencode
 import cv2
 import numpy as np
+import zxingcpp
 import requests
 from flask import Flask, request, abort
 
@@ -54,6 +55,24 @@ def decode_photo(photo):
         crop = img[int(h*y0):int(h*y1), int(w*x0):int(w*x1)]
         if min(crop.shape[:2]) > 100:
             regions.append(crop)
+    for region in regions:
+        if time.monotonic() > deadline:
+            break
+        rh, rw = region.shape[:2]
+        if max(rh, rw) > 1500:
+            s = 1500 / max(rh, rw)
+            region = cv2.resize(region, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
+        gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
+        try:
+            result = zxingcpp.read_barcode(gray, formats=zxingcpp.BarcodeFormat.QRCode,
+                                           try_rotate=True, try_downscale=False)
+            if result and result.text:
+                link = normalize_qr(result.text)
+                if link:
+                    return link, "read"
+                non_ofd = True
+        except Exception:
+            logging.exception("ZXing decoder error")
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     for region in regions:
         if time.monotonic() > deadline:
