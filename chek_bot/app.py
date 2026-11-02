@@ -74,7 +74,7 @@ def webhook():
     if not chat_id:
         return {"ok": True}
     text = msg.get("text", "")
-    if text.startswith("/id"):
+    if re.match(r"^/\s*id(?:@\w+)?(?:\s|$)", text, re.IGNORECASE):
         send(chat_id, f"Chat ID: {chat_id}")
         return {"ok": True}
     if chat.get("type") != "private":
