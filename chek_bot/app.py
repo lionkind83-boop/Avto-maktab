@@ -117,9 +117,11 @@ if __name__ == "__main__":
 # Register webhook at worker boot, without revealing bot token in logs.
 if TOKEN and PUBLIC_URL:
     try:
+        probe = requests.get(API + "/getMe", timeout=12)
+        logging.info("Telegram getMe: HTTP %s; reason: %s", probe.status_code, probe.json().get("description", "ok") if probe.headers.get("content-type", "").startswith("application/json") else "non-JSON response")
         result = requests.post(API + "/setWebhook", json={"url": PUBLIC_URL + "/webhook", "secret_token": SECRET, "allowed_updates": ["message"]}, timeout=12)
         if not result.ok or not result.json().get("ok"):
-            logging.error("Telegram webhook registration failed (HTTP %s)", result.status_code)
+            logging.error("Telegram webhook registration failed (HTTP %s; reason: %s)", result.status_code, (result.json().get("description", "unknown") if result.headers.get("content-type","").startswith("application/json") else "non-JSON response"))
         else:
             logging.info("Telegram webhook registered")
     except Exception:
