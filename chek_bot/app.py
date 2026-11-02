@@ -206,12 +206,13 @@ def report():
     for row in rows:
         status = row["status"]
         counts[status] = counts.get(status, 0) + 1
-        if status == "unreadable":
+        if status in ("unreadable", "manual_review"):
             failures.append(row["message_id"])
     lines = [
         "📊 QR текширув ҳисоботи (Supabase доимий база)",
         f"✅ Ўқилди: {counts.get('read', 0)}",
-        f"❌ Ўқилмади: {counts.get('unreadable', 0)}",
+        f"📝 Қўлда текшириш керак: {counts.get('manual_review', 0)}",
+        f"❌ Ўқилмади (эски): {counts.get('unreadable', 0)}",
         f"🔁 Такрорий: {counts.get('duplicate', 0)}",
         f"⚠️ Юбориш хатоси: {counts.get('send_failed', 0)}",
         f"🔎 OFD бўлмаган QR: {counts.get('non_ofd', 0)}",
@@ -272,6 +273,15 @@ def webhook():
     if text.strip().split("@")[0] == "/status":
         send(chat_id, report())
         return {"ok": True}
+    if text.strip().split("@")[0] == "/review":
+        rows = [row for row in store("report") if row.get("status") == "manual_review"]
+        if not rows:
+            send(chat_id, "✅ Қўлда текшириладиган чеклар йўқ.")
+        else:
+            send(chat_id, "📝 Қўлда текшириладиган чек ID лари:\\n" +
+                 "\\n".join(str(row["message_id"]) for row in rows[-30:]) +
+                 "\\nOFD тасдиқланмагунча бухгалтерияда тасдиқланган деб ҳисобламанг.")
+        return {"ok": True}
     if text.strip().split("@")[0] == "/unread":
         rows = get_unread()
         if not rows:
@@ -302,7 +312,7 @@ def webhook():
             elif status == "invalid_image":
                 send(chat_id, "❌ Расм файлини очиб бўлмади. JPG ёки PNG форматда юборинг.")
             else:
-                send(chat_id, "❌ Расмдаги QR-кодни техник жиҳатдан ўқиб бўлмади. Чекни аниқроқ суратга олинг.")
+                send(chat_id, "📝 QR-код ўқилмади. Чек базага сақланди ва қўлда текшириш рўйхатига қўшилди. /review")
         else:
             send(chat_id, "OFD чек ҳаволасини ёки QR-кодли чек расмини юборинг.")
         return {"ok": True}
