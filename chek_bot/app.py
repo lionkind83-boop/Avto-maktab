@@ -1,4 +1,4 @@
-import os, re, sqlite3, io, logging, hashlib, time
+import os, re, sqlite3, io, logging, hashlib, time, base64
 from urllib.parse import urlparse, parse_qs, urlencode
 import cv2
 import numpy as np
@@ -135,6 +135,16 @@ def store(action, **data):
 def record_result(msg, status, link="", file_id=None):
     store("record", message_id=msg["message_id"], status=status,
           url=link or None, file_id=file_id)
+    if file_id:
+        try:
+            photo = fetch_telegram_image(file_id)
+            if len(photo) <= 8_000_000:
+                store("image", message_id=msg["message_id"],
+                      base64=base64.b64encode(photo).decode("ascii"))
+            else:
+                logging.warning("Receipt photo exceeds archive upload limit")
+        except Exception:
+            logging.exception("Receipt image archive upload failed: message_id=%s", msg["message_id"])
 
 def get_unread():
     return [(row["message_id"], row.get("file_id")) for row in store("unread")]
