@@ -118,22 +118,26 @@ def init_results(db):
     if "updated_at" not in columns:
         db.execute("ALTER TABLE qr_results ADD COLUMN updated_at TEXT")
 
+STORE_URL = os.environ.get("RECEIPT_STORE_URL", "")
+STORE_SECRET = os.environ.get("RECEIPT_STORE_SECRET", "")
+
+def store(action, **data):
+    if not STORE_URL or not STORE_SECRET:
+        raise RuntimeError("Persistent receipt database is not configured")
+    response = requests.post(STORE_URL, headers={"x-bot-secret": STORE_SECRET},
+                             json={"action": action, **data}, timeout=15)
+    response.raise_for_status()
+    result = response.json()
+    if "error" in result:
+        raise RuntimeError("Persistent receipt database returned an error")
+    return result.get("data", [])
+
 def record_result(msg, status, link="", file_id=None):
-    with sqlite3.connect(DB) as db:
-        init_results(db)
-        db.execute("""INSERT INTO qr_results (message_id,status,url,file_id,updated_at)
-            VALUES (?,?,?,?,CURRENT_TIMESTAMP)
-            ON CONFLICT(message_id) DO UPDATE SET status=excluded.status,
-            url=excluded.url, file_id=COALESCE(excluded.file_id,qr_results.file_id),
-            updated_at=CURRENT_TIMESTAMP""",
-            (msg["message_id"], status, link, file_id))
+    store("record", message_id=msg["message_id"], status=status,
+          url=link or None, file_id=file_id)
 
 def get_unread():
-    with sqlite3.connect(DB) as db:
-        init_results(db)
-        return db.execute("""SELECT message_id,file_id FROM qr_results
-            WHERE status IN ('unreadable','invalid_image')
-            ORDER BY message_id DESC LIMIT 30""").fetchall()
+    return [(row["message_id"], row.get("file_id")) for row in store("unread")]
 
 def fetch_telegram_image(file_id):
     meta = requests.get(API + "/getFile", params={"file_id": file_id}, timeout=12)
@@ -172,13 +176,16 @@ def retry_unread(chat_id):
     send(chat_id, f"🔄 Қайта текширилди: {updated}/{min(len(rows),5)}. Қолганлари учун /retry ни яна юборинг.\n/status — натижалар.")
 
 def report():
-    with sqlite3.connect(DB) as db:
-        init_results(db)
-        rows = db.execute("SELECT status, COUNT(*) FROM qr_results GROUP BY status").fetchall()
-        failures = db.execute("SELECT message_id FROM qr_results WHERE status='unreadable' ORDER BY message_id DESC LIMIT 30").fetchall()
-    counts = dict(rows)
+    rows = store("report")
+    counts = {}
+    failures = []
+    for row in rows:
+        status = row["status"]
+        counts[status] = counts.get(status, 0) + 1
+        if status == "unreadable":
+            failures.append(row["message_id"])
     lines = [
-        "📊 QR текширув ҳисоботи (сервер хотираси)",
+        "📊 QR текширув ҳисоботи (Supabase доимий база)",
         f"✅ Ўқилди: {counts.get('read', 0)}",
         f"❌ Ўқилмади: {counts.get('unreadable', 0)}",
         f"🔁 Такрорий: {counts.get('duplicate', 0)}",
@@ -186,23 +193,18 @@ def report():
         f"🔎 OFD бўлмаган QR: {counts.get('non_ofd', 0)}",
     ]
     if failures:
-        lines.append("Ўқилмаган хабар ID: " + ", ".join(str(x[0]) for x in failures))
+        lines.append("Ўқилмаган хабар ID: " + ", ".join(str(x) for x in failures[-30:]))
     return chr(10).join(lines)
 
 def seen(link):
-    with sqlite3.connect(DB) as db:
-        db.execute("CREATE TABLE IF NOT EXISTS sent (url TEXT PRIMARY KEY)")
-        if db.execute("SELECT 1 FROM sent WHERE url=?", (link,)).fetchone():
-            return True
-        return False
+    return bool(store("seen", url=link))
 
 def remember(link):
-    with sqlite3.connect(DB) as db:
-        db.execute("INSERT OR IGNORE INTO sent (url) VALUES (?)", (link,))
+    pass  # Successful receipts are persisted by record_result.
 
 @app.get("/")
 def health():
-    return {"status": "ok", "bot_configured": bool(TOKEN), "group_configured": bool(TARGET)}
+    return {"status": "ok", "bot_configured": bool(TOKEN), "group_configured": bool(TARGET), "persistent_database_configured": bool(STORE_URL and STORE_SECRET)}
 
 @app.post("/webhook")
 def webhook():
