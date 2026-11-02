@@ -3,3 +3,4 @@ requests==2.32.3
 opencv-python-headless==4.11.0.86
 numpy==2.2.6
 gunicorn==23.0.0
+zxing-cpp==2.3.0
