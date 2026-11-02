@@ -13,7 +13,7 @@ PUBLIC_URL = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
 SECRET = hashlib.sha256(TOKEN.encode()).hexdigest() if TOKEN else ""
 OWNER = os.environ.get("OWNER_USER_ID", "")
 API = f"https://api.telegram.org/bot{TOKEN}"
-DB = "/tmp/chek_bot_seen.sqlite3"
+DB = os.environ.get("SQLITE_PATH", "/tmp/chek_bot_seen.sqlite3")
 
 def send(chat, message):
     requests.post(API + "/sendMessage", json={"chat_id": chat, "text": message, "disable_web_page_preview": True}, timeout=20).raise_for_status()
@@ -92,14 +92,72 @@ def decode_photo(photo):
                 continue
     return None, "non_ofd" if non_ofd else "unreadable"
 
-def record_result(msg, status, link=""):
+def init_results(db):
+    db.execute("""CREATE TABLE IF NOT EXISTS qr_results
+        (message_id INTEGER PRIMARY KEY, status TEXT NOT NULL, url TEXT,
+         file_id TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    columns = {row[1] for row in db.execute("PRAGMA table_info(qr_results)")}
+    if "file_id" not in columns:
+        db.execute("ALTER TABLE qr_results ADD COLUMN file_id TEXT")
+    if "updated_at" not in columns:
+        db.execute("ALTER TABLE qr_results ADD COLUMN updated_at TEXT")
+
+def record_result(msg, status, link="", file_id=None):
     with sqlite3.connect(DB) as db:
-        db.execute("CREATE TABLE IF NOT EXISTS qr_results (message_id INTEGER PRIMARY KEY, status TEXT NOT NULL, url TEXT)")
-        db.execute("INSERT OR REPLACE INTO qr_results (message_id,status,url) VALUES (?,?,?)", (msg["message_id"], status, link))
+        init_results(db)
+        db.execute("""INSERT INTO qr_results (message_id,status,url,file_id,updated_at)
+            VALUES (?,?,?,?,CURRENT_TIMESTAMP)
+            ON CONFLICT(message_id) DO UPDATE SET status=excluded.status,
+            url=excluded.url, file_id=COALESCE(excluded.file_id,qr_results.file_id),
+            updated_at=CURRENT_TIMESTAMP""",
+            (msg["message_id"], status, link, file_id))
+
+def get_unread():
+    with sqlite3.connect(DB) as db:
+        init_results(db)
+        return db.execute("""SELECT message_id,file_id FROM qr_results
+            WHERE status IN ('unreadable','invalid_image')
+            ORDER BY message_id DESC LIMIT 30""").fetchall()
+
+def fetch_telegram_image(file_id):
+    meta = requests.get(API + "/getFile", params={"file_id": file_id}, timeout=12)
+    meta.raise_for_status()
+    path = meta.json().get("result", {}).get("file_path")
+    if not path:
+        raise ValueError("Telegram did not return a file path")
+    response = requests.get(f"https://api.telegram.org/file/bot{TOKEN}/{path}", timeout=18)
+    response.raise_for_status()
+    if len(response.content) > 12_000_000:
+        raise ValueError("Image too large")
+    return response.content
+
+def retry_unread(chat_id):
+    rows = get_unread()
+    if not rows:
+        send(chat_id, "✅ Қайта текшириладиган ўқилмаган чек йўқ.")
+        return
+    updated = 0
+    for message_id, file_id in rows[:5]:
+        if not file_id:
+            continue
+        try:
+            link, status = decode_photo(fetch_telegram_image(file_id))
+            if link:
+                if seen(link):
+                    status = "duplicate"
+                else:
+                    send(TARGET, "🧾 Қайта ўқилган фискал чек\\n" + link)
+                    remember(link)
+                    status = "read"
+            record_result({"message_id": message_id}, status, link or "", file_id)
+            updated += 1
+        except Exception:
+            logging.exception("Retry failed: message_id=%s", message_id)
+    send(chat_id, f"🔄 Қайта текширилди: {updated}/{min(len(rows),5)}. Қолганлари учун /retry ни яна юборинг.\\n/status — натижалар.")
 
 def report():
     with sqlite3.connect(DB) as db:
-        db.execute("CREATE TABLE IF NOT EXISTS qr_results (message_id INTEGER PRIMARY KEY, status TEXT NOT NULL, url TEXT)")
+        init_results(db)
         rows = db.execute("SELECT status, COUNT(*) FROM qr_results GROUP BY status").fetchall()
         failures = db.execute("SELECT message_id FROM qr_results WHERE status='unreadable' ORDER BY message_id DESC LIMIT 30").fetchall()
     counts = dict(rows)
@@ -158,14 +216,26 @@ def webhook():
     if text.strip().split("@")[0] == "/status":
         send(chat_id, report())
         return {"ok": True}
+    if text.strip().split("@")[0] == "/unread":
+        rows = get_unread()
+        if not rows:
+            send(chat_id, "✅ Ўқилмаган чеклар йўқ.")
+        else:
+            send(chat_id, "❌ Ўқилмаган чек хабар ID лари:\\n" +
+                 "\\n".join(f"• {mid}" + ("" if fid else " (қайта юбориш керак)") for mid, fid in rows) +
+                 "\\n\\nҚайта текшириш: /retry")
+        return {"ok": True}
+    if text.strip().split("@")[0] == "/retry":
+        retry_unread(chat_id)
+        return {"ok": True}
     link = normalize_qr(text) if text else None
     if not link and (msg.get("photo") or (msg.get("document") or {}).get("mime_type", "").startswith("image/")):
         file_id = msg["photo"][-1]["file_id"] if msg.get("photo") else msg["document"]["file_id"]
-        meta = requests.get(API + "/getFile", params={"file_id": file_id}, timeout=20).json()
-        path = meta.get("result", {}).get("file_path")
-        if path:
-            data = requests.get(f"https://api.telegram.org/file/bot{TOKEN}/{path}", timeout=30).content
-            link, qr_status = decode_photo(data)
+        try:
+            link, qr_status = decode_photo(fetch_telegram_image(file_id))
+        except Exception:
+            logging.exception("Image download or scan failed")
+            qr_status = "unreadable"
     if not link:
         if msg.get("photo") or msg.get("document"):
             status = locals().get("qr_status", "unreadable")
@@ -181,17 +251,17 @@ def webhook():
             send(chat_id, "OFD чек ҳаволасини ёки QR-кодли чек расмини юборинг.")
         return {"ok": True}
     if seen(link):
-        record_result(msg, "duplicate", link)
+        record_result(msg, "duplicate", link, locals().get("file_id"))
         send(chat_id, "Бу чек аввал юборилган (сервер хотираси бўйича).")
         return {"ok": True}
     try:
         send(TARGET, "🧾 Янги фискал чек\n" + link)
         remember(link)
-        record_result(msg, "read", link)
+        record_result(msg, "read", link, locals().get("file_id"))
         send(chat_id, "✅ OFD ҳаволаси гуруҳга юборилди.")
     except Exception:
         logging.exception("Send failed")
-        record_result(msg, "send_failed", link)
+        record_result(msg, "send_failed", link, locals().get("file_id"))
         send(chat_id, "❌ Гуруҳга юборилмади. Бот ҳуқуқлари ва TARGET_CHAT_ID ни текширинг.")
     return {"ok": True}
 
