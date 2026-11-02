@@ -32,49 +32,34 @@ def normalize_qr(raw):
     return "https://ofd.soliq.uz/check?" + urlencode({k: query[k][0] for k in ("t", "r", "c", "s")})
 
 def decode_photo(photo):
-    """Return (ofd_url, status): read, non_ofd, unreadable, or invalid_image."""
-    array = np.frombuffer(photo, dtype=np.uint8)
-    img = cv2.imdecode(array, cv2.IMREAD_COLOR)
+    """Bounded QR scan suitable for Render free-tier worker."""
+    img = cv2.imdecode(np.frombuffer(photo, dtype=np.uint8), cv2.IMREAD_COLOR)
     if img is None:
         return None, "invalid_image"
     h, w = img.shape[:2]
-    if max(h, w) > 2600:
-        scale = 2600 / max(h, w)
+    scale = min(1.0, 1100 / max(h, w))
+    if scale < 1:
         img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-        h, w = img.shape[:2]
+    h, w = img.shape[:2]
     detector = cv2.QRCodeDetector()
-    variants = [img]
-    # Regions reduce background clutter from cards and payment slips.
-    for y0, y1 in ((0, .65), (.35, 1)):
-        for x0, x1 in ((0, .6), (.4, 1)):
-            crop = img[int(h*y0):int(h*y1), int(w*x0):int(w*x1)]
-            if crop.size:
-                variants.append(crop)
+    # Only a few bounded passes: avoid OpenCV multi-QR scan and 2x enlargement.
+    regions = [img,
+               img[h//2:, :],
+               img[:, w//2:],
+               img[h//2:, w//2:]]
     non_ofd = False
-    for candidate in variants:
-        for rotation in range(4):
-            if rotation:
-                candidate = cv2.rotate(candidate, cv2.ROTATE_90_CLOCKWISE)
-            gray = cv2.cvtColor(candidate, cv2.COLOR_BGR2GRAY)
-            frames = [gray]
-            if min(gray.shape) < 1100:
-                frames.append(cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC))
-            for frame in frames:
-                try:
-                    decoded = []
-                    value, _, _ = detector.detectAndDecode(frame)
-                    if value:
-                        decoded.append(value)
-                    ok, values, _, _ = detector.detectAndDecodeMulti(frame)
-                    if ok:
-                        decoded.extend(v for v in values if v)
-                    for value in decoded:
-                        link = normalize_qr(value)
-                        if link:
-                            return link, "read"
-                        non_ofd = True
-                except cv2.error:
-                    continue
+    for region in regions:
+        if min(region.shape[:2]) < 90:
+            continue
+        try:
+            value, _, _ = detector.detectAndDecode(region)
+        except cv2.error:
+            continue
+        if value:
+            link = normalize_qr(value)
+            if link:
+                return link, "read"
+            non_ofd = True
     return None, "non_ofd" if non_ofd else "unreadable"
 
 def record_result(msg, status, link=""):
