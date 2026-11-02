@@ -190,9 +190,8 @@ def retry_unread(chat_id):
                 if seen(link):
                     status = "duplicate"
                 else:
-                    send(TARGET, "🧾 Қайта ўқилган фискал чек\n" + link)
-                    remember(link)
-                    status = "read"
+                    # Retry is audit-only: never post an OFD link to the group.
+                    status = "manual_review"
             record_result({"message_id": message_id}, status, link or "", file_id)
             updated += 1
         except Exception:
@@ -318,7 +317,7 @@ def webhook():
         return {"ok": True}
     if seen(link):
         record_result(msg, "duplicate", link, locals().get("file_id"))
-        send(chat_id, "Бу чек аввал юборилган (сервер хотираси бўйича).")
+        send(chat_id, "Бу чек аввал қайд этилган. OFD ҳаволаси гуруҳга қайта юборилмади.")
         return {"ok": True}
     try:
         send(TARGET, "🧾 Янги фискал чек\n" + link)
