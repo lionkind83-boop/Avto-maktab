@@ -37,15 +37,37 @@ def decode_photo(photo):
     if img is None:
         return None
     detector = cv2.QRCodeDetector()
-    value, _, _ = detector.detectAndDecode(img)
-    if value:
-        return normalize_qr(value)
-    ok, values, _, _ = detector.detectAndDecodeMulti(img)
-    if ok:
-        for value in values:
-            link = normalize_qr(value)
-            if link:
-                return link
+    h, w = img.shape[:2]
+    # Try full image, rotations, upscaling and individual receipt regions.
+    variants = [img]
+    if max(h, w) > 1600:
+        scale = 1600 / max(h, w)
+        variants.append(cv2.resize(img, None, fx=scale, fy=scale))
+    variants += [cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE),
+                 cv2.rotate(img, cv2.ROTATE_180),
+                 cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)]
+    # Cropping helps when a photo contains multiple receipts.
+    for y0, y1 in ((0, .6), (.4, 1), (0, 1)):
+        for x0, x1 in ((0, .55), (.45, 1)):
+            crop = img[int(h*y0):int(h*y1), int(w*x0):int(w*x1)]
+            if crop.size:
+                variants.append(crop)
+    for candidate in variants:
+        gray = cv2.cvtColor(candidate, cv2.COLOR_BGR2GRAY)
+        for frame in (candidate, gray):
+            try:
+                value, _, _ = detector.detectAndDecode(frame)
+                link = normalize_qr(value) if value else None
+                if link:
+                    return link
+                ok, values, _, _ = detector.detectAndDecodeMulti(frame)
+                if ok:
+                    for value in values:
+                        link = normalize_qr(value)
+                        if link:
+                            return link
+            except cv2.error:
+                continue
     return None
 
 def record_result(msg, status, link=""):
@@ -106,26 +128,34 @@ def webhook():
     if not TARGET:
         send(chat_id, "Гуруҳ ҳали уланмаган. Аввал гуруҳда /id буйруғини юборинг ва TARGET_CHAT_ID ни серверга киритинг.")
         return {"ok": True}
-    if re.match(r"^/status(?:@\\w+)?(?:\\s|$)", text, re.IGNORECASE):\n        send(chat_id, report())\n        return {"ok": True}\n    link = normalize_qr(text) if text else None
-    if not link and msg.get("photo"):
-        file_id = msg["photo"][-1]["file_id"]
+    if text.strip().split("@")[0] == "/status":
+        send(chat_id, report())
+        return {"ok": True}
+    link = normalize_qr(text) if text else None
+    if not link and (msg.get("photo") or (msg.get("document") or {}).get("mime_type", "").startswith("image/")):
+        file_id = msg["photo"][-1]["file_id"] if msg.get("photo") else msg["document"]["file_id"]
         meta = requests.get(API + "/getFile", params={"file_id": file_id}, timeout=20).json()
         path = meta.get("result", {}).get("file_path")
         if path:
             data = requests.get(f"https://api.telegram.org/file/bot{TOKEN}/{path}", timeout=30).content
             link = decode_photo(data)
     if not link:
+        if msg.get("photo") or msg.get("document"):
+            record_result(msg, "unreadable")
         send(chat_id, "QR-код ўқилмади ёки OFD чеки эмас. Аниқроқ расм ёки OFD ҳаволасини юборинг.")
         return {"ok": True}
     if seen(link):
+        record_result(msg, "duplicate", link)
         send(chat_id, "Бу чек аввал юборилган (сервер хотираси бўйича).")
         return {"ok": True}
     try:
         send(TARGET, "🧾 Янги фискал чек\n" + link)
         remember(link)
+        record_result(msg, "read", link)
         send(chat_id, "✅ OFD ҳаволаси гуруҳга юборилди.")
     except Exception:
         logging.exception("Send failed")
+        record_result(msg, "send_failed", link)
         send(chat_id, "❌ Гуруҳга юборилмади. Бот ҳуқуқлари ва TARGET_CHAT_ID ни текширинг.")
     return {"ok": True}
 
