@@ -1,4 +1,4 @@
-import os, re, sqlite3, io, logging, hashlib
+import os, re, sqlite3, io, logging, hashlib, time
 from urllib.parse import urlparse, parse_qs, urlencode
 import cv2
 import numpy as np
@@ -32,34 +32,64 @@ def normalize_qr(raw):
     return "https://ofd.soliq.uz/check?" + urlencode({k: query[k][0] for k in ("t", "r", "c", "s")})
 
 def decode_photo(photo):
-    """Bounded QR scan suitable for Render free-tier worker."""
+    """Locate and enhance QR candidates with bounded CPU and memory."""
+    if len(photo) > 12_000_000:
+        return None, "invalid_image"
     img = cv2.imdecode(np.frombuffer(photo, dtype=np.uint8), cv2.IMREAD_COLOR)
     if img is None:
         return None, "invalid_image"
     h, w = img.shape[:2]
-    scale = min(1.0, 1100 / max(h, w))
-    if scale < 1:
+    if h * w > 12_000_000:
+        scale = (12_000_000 / (h * w)) ** .5
         img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
     h, w = img.shape[:2]
+    cv2.setNumThreads(1)
     detector = cv2.QRCodeDetector()
-    # Only a few bounded passes: avoid OpenCV multi-QR scan and 2x enlargement.
-    regions = [img,
-               img[h//2:, :],
-               img[:, w//2:],
-               img[h//2:, w//2:]]
+    deadline = time.monotonic() + 9
     non_ofd = False
+    # Locate likely receipt QR areas; preserve resolution of small codes.
+    regions = [img]
+    for y0, y1, x0, x1 in ((.45, 1, 0, .65), (.45, 1, .35, 1),
+                           (0, .6, 0, .65), (0, .6, .35, 1)):
+        crop = img[int(h*y0):int(h*y1), int(w*x0):int(w*x1)]
+        if min(crop.shape[:2]) > 100:
+            regions.append(crop)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     for region in regions:
-        if min(region.shape[:2]) < 90:
-            continue
-        try:
-            value, _, _ = detector.detectAndDecode(region)
-        except cv2.error:
-            continue
-        if value:
-            link = normalize_qr(value)
-            if link:
-                return link, "read"
-            non_ofd = True
+        if time.monotonic() > deadline:
+            break
+        rh, rw = region.shape[:2]
+        if max(rh, rw) > 1250:
+            s = 1250 / max(rh, rw)
+            region = cv2.resize(region, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
+        gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
+        frames = [gray, clahe.apply(gray)]
+        for frame in frames:
+            if time.monotonic() > deadline:
+                break
+            try:
+                value, points, _ = detector.detectAndDecode(frame)
+                if value:
+                    link = normalize_qr(value)
+                    if link:
+                        return link, "read"
+                    non_ofd = True
+                # If QR location was found but decode failed, try an enlarged ROI.
+                if points is not None and not value and time.monotonic() < deadline:
+                    corners = points.reshape(-1, 2)
+                    x0, y0 = np.maximum(np.min(corners, axis=0).astype(int) - 12, 0)
+                    x1, y1 = np.minimum(np.max(corners, axis=0).astype(int) + 12, [frame.shape[1], frame.shape[0]])
+                    roi = frame[y0:y1, x0:x1]
+                    if roi.size and max(roi.shape) < 600:
+                        roi = cv2.resize(roi, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+                        value, _, _ = detector.detectAndDecode(roi)
+                        if value:
+                            link = normalize_qr(value)
+                            if link:
+                                return link, "read"
+                            non_ofd = True
+            except (cv2.error, ValueError):
+                continue
     return None, "non_ofd" if non_ofd else "unreadable"
 
 def record_result(msg, status, link=""):
