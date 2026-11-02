@@ -48,6 +48,24 @@ def decode_photo(photo):
                 return link
     return None
 
+def record_result(msg, status, link=""):
+    with sqlite3.connect(DB) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS qr_results (message_id INTEGER PRIMARY KEY, status TEXT NOT NULL, url TEXT)")
+        db.execute("INSERT OR REPLACE INTO qr_results (message_id,status,url) VALUES (?,?,?)", (msg["message_id"], status, link))
+
+def report():
+    with sqlite3.connect(DB) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS qr_results (message_id INTEGER PRIMARY KEY, status TEXT NOT NULL, url TEXT)")
+        rows = db.execute("SELECT status, COUNT(*) FROM qr_results GROUP BY status").fetchall()
+        failures = db.execute("SELECT message_id FROM qr_results WHERE status='unreadable' ORDER BY message_id DESC LIMIT 30").fetchall()
+    counts = dict(rows)
+    return ("📊 QR текширув ҳисоботи (сервер хотираси)\\n"
+            f"✅ Ўқилди: {counts.get('read',0)}\\n"
+            f"❌ Ўқилмади: {counts.get('unreadable',0)}\\n"
+            f"🔁 Такрорий: {counts.get('duplicate',0)}\\n"
+            f"⚠️ Юбориш хатоси: {counts.get('send_failed',0)}\\n"
+            + ("Ўқилмаган хабар ID: " + ", ".join(str(x[0]) for x in failures) if failures else ""))
+
 def seen(link):
     with sqlite3.connect(DB) as db:
         db.execute("CREATE TABLE IF NOT EXISTS sent (url TEXT PRIMARY KEY)")
@@ -88,7 +106,7 @@ def webhook():
     if not TARGET:
         send(chat_id, "Гуруҳ ҳали уланмаган. Аввал гуруҳда /id буйруғини юборинг ва TARGET_CHAT_ID ни серверга киритинг.")
         return {"ok": True}
-    link = normalize_qr(text) if text else None
+    if re.match(r"^/status(?:@\\w+)?(?:\\s|$)", text, re.IGNORECASE):\n        send(chat_id, report())\n        return {"ok": True}\n    link = normalize_qr(text) if text else None
     if not link and msg.get("photo"):
         file_id = msg["photo"][-1]["file_id"]
         meta = requests.get(API + "/getFile", params={"file_id": file_id}, timeout=20).json()
