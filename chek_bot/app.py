@@ -33,82 +33,79 @@ def normalize_qr(raw):
     return "https://ofd.soliq.uz/check?" + urlencode({k: query[k][0] for k in ("t", "r", "c", "s")})
 
 def decode_photo(photo):
-    """Locate and enhance QR candidates with bounded CPU and memory."""
+    """Find, deskew and enhance receipt QR codes with bounded processing."""
     if len(photo) > 12_000_000:
         return None, "invalid_image"
     img = cv2.imdecode(np.frombuffer(photo, dtype=np.uint8), cv2.IMREAD_COLOR)
     if img is None:
         return None, "invalid_image"
-    h, w = img.shape[:2]
-    if h * w > 12_000_000:
-        scale = (12_000_000 / (h * w)) ** .5
-        img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-    h, w = img.shape[:2]
     cv2.setNumThreads(1)
-    detector = cv2.QRCodeDetector()
-    deadline = time.monotonic() + 9
+    h, w = img.shape[:2]
+    if h * w > 8_000_000:
+        s = (8_000_000 / (h * w)) ** .5
+        img = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
+    h, w = img.shape[:2]
+    deadline = time.monotonic() + 11
     non_ofd = False
-    # Locate likely receipt QR areas; preserve resolution of small codes.
+    detector = cv2.QRCodeDetector()
+    clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8))
     regions = [img]
-    for y0, y1, x0, x1 in ((.45, 1, 0, .65), (.45, 1, .35, 1),
-                           (0, .6, 0, .65), (0, .6, .35, 1)):
-        crop = img[int(h*y0):int(h*y1), int(w*x0):int(w*x1)]
-        if min(crop.shape[:2]) > 100:
-            regions.append(crop)
+    # Localize high-contrast square QR blocks, regardless of receipt orientation.
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    small_scale = min(1.0, 900 / max(h, w))
+    small = cv2.resize(gray, None, fx=small_scale, fy=small_scale) if small_scale < 1 else gray
+    binary = cv2.adaptiveThreshold(small, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                   cv2.THRESH_BINARY_INV, 31, 9)
+    merged = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    contours, _ = cv2.findContours(merged, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    candidates = []
+    for contour in contours:
+        x, y, cw, ch = cv2.boundingRect(contour)
+        ratio = cw / max(ch, 1)
+        if 0.65 < ratio < 1.5 and 45 < min(cw, ch) and max(cw, ch) < 650:
+            candidates.append((cw * ch, x, y, cw, ch))
+    for _, x, y, cw, ch in sorted(candidates, reverse=True)[:8]:
+        cx, cy = (x + cw / 2) / small_scale, (y + ch / 2) / small_scale
+        radius = max(cw, ch) / small_scale * .72
+        x0, x1 = max(0, int(cx-radius)), min(w, int(cx+radius))
+        y0, y1 = max(0, int(cy-radius)), min(h, int(cy+radius))
+        if x1-x0 > 65 and y1-y0 > 65:
+            regions.append(img[y0:y1, x0:x1])
+    # Receipt QR is often at the bottom, while full-photo decoding may miss it.
+    for y0, y1, x0, x1 in ((.4, 1, 0, .6), (.4, 1, .4, 1),
+                           (0, .6, 0, .6), (0, .6, .4, 1)):
+        regions.append(img[int(h*y0):int(h*y1), int(w*x0):int(w*x1)])
     for region in regions:
         if time.monotonic() > deadline:
             break
         rh, rw = region.shape[:2]
-        if max(rh, rw) > 1500:
-            s = 1500 / max(rh, rw)
-            region = cv2.resize(region, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
-        gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
-        try:
-            result = zxingcpp.read_barcode(gray, formats=zxingcpp.BarcodeFormat.QRCode,
-                                           try_rotate=True, try_downscale=False)
-            if result and result.text:
-                link = normalize_qr(result.text)
-                if link:
-                    return link, "read"
-                non_ofd = True
-        except Exception:
-            logging.exception("ZXing decoder error")
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    for region in regions:
-        if time.monotonic() > deadline:
-            break
-        rh, rw = region.shape[:2]
-        if max(rh, rw) > 1250:
-            s = 1250 / max(rh, rw)
+        if min(rh, rw) < 60:
+            continue
+        if max(rh, rw) > 1200:
+            s = 1200 / max(rh, rw)
             region = cv2.resize(region, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
         gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
         frames = [gray, clahe.apply(gray)]
+        if max(gray.shape) < 650:
+            frames.append(cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC))
         for frame in frames:
             if time.monotonic() > deadline:
                 break
             try:
-                value, points, _ = detector.detectAndDecode(frame)
+                result = zxingcpp.read_barcode(frame, formats=zxingcpp.BarcodeFormat.QRCode,
+                                               try_rotate=True, try_downscale=False)
+                value = result.text if result else ""
+                if not value and max(frame.shape) <= 1200 and time.monotonic() < deadline:
+                    value, _, _ = detector.detectAndDecode(frame)
                 if value:
                     link = normalize_qr(value)
                     if link:
                         return link, "read"
                     non_ofd = True
-                # If QR location was found but decode failed, try an enlarged ROI.
-                if points is not None and not value and time.monotonic() < deadline:
-                    corners = points.reshape(-1, 2)
-                    x0, y0 = np.maximum(np.min(corners, axis=0).astype(int) - 12, 0)
-                    x1, y1 = np.minimum(np.max(corners, axis=0).astype(int) + 12, [frame.shape[1], frame.shape[0]])
-                    roi = frame[y0:y1, x0:x1]
-                    if roi.size and max(roi.shape) < 600:
-                        roi = cv2.resize(roi, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-                        value, _, _ = detector.detectAndDecode(roi)
-                        if value:
-                            link = normalize_qr(value)
-                            if link:
-                                return link, "read"
-                            non_ofd = True
-            except (cv2.error, ValueError):
-                continue
+            except Exception:
+                logging.exception("QR decoder error")
+    logging.info("QR scan finished: regions=%s, candidate_count=%s, non_ofd=%s",
+                 len(regions), len(candidates), non_ofd)
     return None, "non_ofd" if non_ofd else "unreadable"
 
 def init_results(db):
