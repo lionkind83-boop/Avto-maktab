@@ -1,4 +1,4 @@
-import os, re, sqlite3, io, logging
+import os, re, sqlite3, io, logging, hashlib
 from urllib.parse import urlparse, parse_qs, urlencode
 import cv2
 import numpy as np
@@ -10,7 +10,8 @@ app = Flask(__name__)
 TOKEN = os.environ.get("BOT_TOKEN", "")
 TARGET = os.environ.get("TARGET_CHAT_ID", "")
 PUBLIC_URL = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
-SECRET = os.environ.get("WEBHOOK_SECRET", "")
+SECRET = hashlib.sha256(TOKEN.encode()).hexdigest() if TOKEN else ""
+OWNER = os.environ.get("OWNER_USER_ID", "")
 API = f"https://api.telegram.org/bot{TOKEN}"
 DB = "/tmp/chek_bot_seen.sqlite3"
 
@@ -64,7 +65,7 @@ def health():
 
 @app.post("/webhook")
 def webhook():
-    if not TOKEN or (SECRET and request.headers.get("X-Telegram-Bot-Api-Secret-Token") != SECRET):
+    if not TOKEN or request.headers.get("X-Telegram-Bot-Api-Secret-Token") != SECRET:
         abort(403)
     update = request.get_json(silent=True) or {}
     msg = update.get("message") or {}
@@ -80,6 +81,9 @@ def webhook():
         return {"ok": True}
     if text.startswith("/start"):
         send(chat_id, "Чек расмини юборинг. QR-коддан OFD ҳаволасини олиб гуруҳга юбораман.")
+        return {"ok": True}
+    if not OWNER or str(msg.get("from", {}).get("id")) != OWNER:
+        send(chat_id, "Рухсат йўқ. /id орқали ID олинг ва OWNER_USER_ID ни Render серверига киритинг.")
         return {"ok": True}
     if not TARGET:
         send(chat_id, "Гуруҳ ҳали уланмаган. Аввал гуруҳда /id буйруғини юборинг ва TARGET_CHAT_ID ни серверга киритинг.")
@@ -109,3 +113,14 @@ def webhook():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "10000")))
+
+# Register webhook at worker boot, without revealing bot token in logs.
+if TOKEN and PUBLIC_URL:
+    try:
+        result = requests.post(API + "/setWebhook", json={"url": PUBLIC_URL + "/webhook", "secret_token": SECRET, "allowed_updates": ["message"]}, timeout=12)
+        if not result.ok or not result.json().get("ok"):
+            logging.error("Telegram webhook registration failed (HTTP %s)", result.status_code)
+        else:
+            logging.info("Telegram webhook registered")
+    except Exception:
+        logging.exception("Telegram webhook registration failed")
