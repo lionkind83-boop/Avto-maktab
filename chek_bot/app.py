@@ -32,43 +32,50 @@ def normalize_qr(raw):
     return "https://ofd.soliq.uz/check?" + urlencode({k: query[k][0] for k in ("t", "r", "c", "s")})
 
 def decode_photo(photo):
+    """Return (ofd_url, status): read, non_ofd, unreadable, or invalid_image."""
     array = np.frombuffer(photo, dtype=np.uint8)
     img = cv2.imdecode(array, cv2.IMREAD_COLOR)
     if img is None:
-        return None
-    detector = cv2.QRCodeDetector()
+        return None, "invalid_image"
     h, w = img.shape[:2]
-    # Try full image, rotations, upscaling and individual receipt regions.
+    if max(h, w) > 2600:
+        scale = 2600 / max(h, w)
+        img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        h, w = img.shape[:2]
+    detector = cv2.QRCodeDetector()
     variants = [img]
-    if max(h, w) > 1600:
-        scale = 1600 / max(h, w)
-        variants.append(cv2.resize(img, None, fx=scale, fy=scale))
-    variants += [cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE),
-                 cv2.rotate(img, cv2.ROTATE_180),
-                 cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)]
-    # Cropping helps when a photo contains multiple receipts.
-    for y0, y1 in ((0, .6), (.4, 1), (0, 1)):
-        for x0, x1 in ((0, .55), (.45, 1)):
+    # Regions reduce background clutter from cards and payment slips.
+    for y0, y1 in ((0, .65), (.35, 1)):
+        for x0, x1 in ((0, .6), (.4, 1)):
             crop = img[int(h*y0):int(h*y1), int(w*x0):int(w*x1)]
             if crop.size:
                 variants.append(crop)
+    non_ofd = False
     for candidate in variants:
-        gray = cv2.cvtColor(candidate, cv2.COLOR_BGR2GRAY)
-        for frame in (candidate, gray):
-            try:
-                value, _, _ = detector.detectAndDecode(frame)
-                link = normalize_qr(value) if value else None
-                if link:
-                    return link
-                ok, values, _, _ = detector.detectAndDecodeMulti(frame)
-                if ok:
-                    for value in values:
+        for rotation in range(4):
+            if rotation:
+                candidate = cv2.rotate(candidate, cv2.ROTATE_90_CLOCKWISE)
+            gray = cv2.cvtColor(candidate, cv2.COLOR_BGR2GRAY)
+            frames = [gray]
+            if min(gray.shape) < 1100:
+                frames.append(cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC))
+            for frame in frames:
+                try:
+                    decoded = []
+                    value, _, _ = detector.detectAndDecode(frame)
+                    if value:
+                        decoded.append(value)
+                    ok, values, _, _ = detector.detectAndDecodeMulti(frame)
+                    if ok:
+                        decoded.extend(v for v in values if v)
+                    for value in decoded:
                         link = normalize_qr(value)
                         if link:
-                            return link
-            except cv2.error:
-                continue
-    return None
+                            return link, "read"
+                        non_ofd = True
+                except cv2.error:
+                    continue
+    return None, "non_ofd" if non_ofd else "unreadable"
 
 def record_result(msg, status, link=""):
     with sqlite3.connect(DB) as db:
@@ -86,6 +93,7 @@ def report():
             f"❌ Ўқилмади: {counts.get('unreadable',0)}\\n"
             f"🔁 Такрорий: {counts.get('duplicate',0)}\\n"
             f"⚠️ Юбориш хатоси: {counts.get('send_failed',0)}\\n"
+            f"🔎 OFD бўлмаган QR: {counts.get('non_ofd',0)}\\n"
             + ("Ўқилмаган хабар ID: " + ", ".join(str(x[0]) for x in failures) if failures else ""))
 
 def seen(link):
@@ -138,11 +146,20 @@ def webhook():
         path = meta.get("result", {}).get("file_path")
         if path:
             data = requests.get(f"https://api.telegram.org/file/bot{TOKEN}/{path}", timeout=30).content
-            link = decode_photo(data)
+            link, qr_status = decode_photo(data)
     if not link:
         if msg.get("photo") or msg.get("document"):
-            record_result(msg, "unreadable")
-        send(chat_id, "QR-код ўқилмади ёки OFD чеки эмас. Аниқроқ расм ёки OFD ҳаволасини юборинг.")
+            status = locals().get("qr_status", "unreadable")
+            record_result(msg, status)
+            logging.info("Receipt QR result: message_id=%s status=%s", msg.get("message_id"), status)
+            if status == "non_ofd":
+                send(chat_id, "⚠️ QR-код ўқилди, лекин OFD фискал чек ҳаволаси эмас. Фискал чек QR-кодини юборинг.")
+            elif status == "invalid_image":
+                send(chat_id, "❌ Расм файлини очиб бўлмади. JPG ёки PNG форматда юборинг.")
+            else:
+                send(chat_id, "❌ Расмдаги QR-кодни техник жиҳатдан ўқиб бўлмади. Чекни аниқроқ суратга олинг.")
+        else:
+            send(chat_id, "OFD чек ҳаволасини ёки QR-кодли чек расмини юборинг.")
         return {"ok": True}
     if seen(link):
         record_result(msg, "duplicate", link)
