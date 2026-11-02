@@ -73,13 +73,17 @@ def report():
         rows = db.execute("SELECT status, COUNT(*) FROM qr_results GROUP BY status").fetchall()
         failures = db.execute("SELECT message_id FROM qr_results WHERE status='unreadable' ORDER BY message_id DESC LIMIT 30").fetchall()
     counts = dict(rows)
-    return ("📊 QR текширув ҳисоботи (сервер хотираси)\\n"
-            f"✅ Ўқилди: {counts.get('read',0)}\\n"
-            f"❌ Ўқилмади: {counts.get('unreadable',0)}\\n"
-            f"🔁 Такрорий: {counts.get('duplicate',0)}\\n"
-            f"⚠️ Юбориш хатоси: {counts.get('send_failed',0)}\\n"
-            f"🔎 OFD бўлмаган QR: {counts.get('non_ofd',0)}\\n"
-            + ("Ўқилмаган хабар ID: " + ", ".join(str(x[0]) for x in failures) if failures else ""))
+    lines = [
+        "📊 QR текширув ҳисоботи (сервер хотираси)",
+        f"✅ Ўқилди: {counts.get('read', 0)}",
+        f"❌ Ўқилмади: {counts.get('unreadable', 0)}",
+        f"🔁 Такрорий: {counts.get('duplicate', 0)}",
+        f"⚠️ Юбориш хатоси: {counts.get('send_failed', 0)}",
+        f"🔎 OFD бўлмаган QR: {counts.get('non_ofd', 0)}",
+    ]
+    if failures:
+        lines.append("Ўқилмаган хабар ID: " + ", ".join(str(x[0]) for x in failures))
+    return chr(10).join(lines)
 
 def seen(link):
     with sqlite3.connect(DB) as db:
