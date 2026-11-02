@@ -1,4 +1,4 @@
-import os, re, sqlite3, io, logging, hashlib, time, base64
+import os, re, sqlite3, io, logging, hashlib, time, base64, csv
 from urllib.parse import urlparse, parse_qs, urlencode
 import cv2
 import numpy as np
@@ -240,6 +240,20 @@ def webhook():
         return {"ok": True}
     if not TARGET:
         send(chat_id, "Гуруҳ ҳали уланмаган. Аввал гуруҳда /id буйруғини юборинг ва TARGET_CHAT_ID ни серверга киритинг.")
+        return {"ok": True}
+    if text.strip().split("@")[0] == "/export":
+        rows = store("report")
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["message_id", "status", "ofd_url", "image_path", "updated_at"])
+        for row in rows:
+            writer.writerow([row.get("message_id"), row.get("status"),
+                             row.get("url"), row.get("image_path"), row.get("updated_at")])
+        response = requests.post(API + "/sendDocument",
+            data={"chat_id": chat_id, "caption": "📊 Чеклар реестри (Google Sheets ва Excel учун CSV)"},
+            files={"document": ("cheklar_reyestri.csv", output.getvalue().encode("utf-8-sig"), "text/csv")},
+            timeout=30)
+        response.raise_for_status()
         return {"ok": True}
     if text.strip().split("@")[0] == "/status":
         send(chat_id, report())
