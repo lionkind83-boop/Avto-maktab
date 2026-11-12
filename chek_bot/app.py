@@ -277,9 +277,9 @@ def webhook():
         if not rows:
             send(chat_id, "✅ Қўлда текшириладиган чеклар йўқ.")
         else:
-            send(chat_id, "📝 Қўлда текшириладиган чек ID лари:\\n" +
-                 "\\n".join(str(row["message_id"]) for row in rows[-30:]) +
-                 "\\nOFD тасдиқланмагунча бухгалтерияда тасдиқланган деб ҳисобламанг.")
+            send(chat_id, "📝 Қўлда текшириладиган чек ID лари:\n" +
+                 "\n".join(str(row["message_id"]) for row in rows[-30:]) +
+                 "\nOFD тасдиқланмагунча бухгалтерияда тасдиқланган деб ҳисобламанг.")
         return {"ok": True}
     if text.strip().split("@")[0] == "/unread":
         rows = get_unread()
