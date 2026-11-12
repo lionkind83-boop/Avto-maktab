@@ -20,7 +20,15 @@ def send(chat, message, reply_to_message_id=None):
     payload = {"chat_id": chat, "text": message, "disable_web_page_preview": True}
     if reply_to_message_id is not None:
         payload["reply_parameters"] = {"message_id": reply_to_message_id}
-    requests.post(API + "/sendMessage", json=payload, timeout=20).raise_for_status()
+    response = requests.post(API + "/sendMessage", json=payload, timeout=20)
+    if not response.ok and reply_to_message_id is not None:
+        logging.warning("Reply send failed (HTTP %s), trying ordinary message", response.status_code)
+        payload.pop("reply_parameters", None)
+        response = requests.post(API + "/sendMessage", json=payload, timeout=20)
+    if not response.ok:
+        logging.error("Telegram sendMessage failed (HTTP %s): %s", response.status_code,
+                      response.json().get("description", "unknown") if response.headers.get("content-type", "").startswith("application/json") else "non-JSON")
+    response.raise_for_status()
 
 def send_review_prompt(chat, message_id, message):
     payload = {
@@ -381,11 +389,18 @@ def webhook():
         send(TARGET, "🧾 Янги фискал чек\n" + link)
         remember(link)
         record_result(msg, "read", link, locals().get("file_id"))
+    except Exception:
+        logging.exception("Group delivery or receipt persistence failed")
+        record_result(msg, "send_failed", link, locals().get("file_id"))
+        try:
+            send(chat_id, "❌ Чекни гуруҳга юбориш ёки сақлашда хатолик. /status ни текширинг.", reply_to_message_id=msg["message_id"])
+        except Exception:
+            logging.exception("Unable to notify sender of delivery failure")
+        return {"ok": True}
+    try:
         send(chat_id, "✅ OFD ҳаволаси гуруҳга юборилди.", reply_to_message_id=msg["message_id"])
     except Exception:
-        logging.exception("Send failed")
-        record_result(msg, "send_failed", link, locals().get("file_id"))
-        send(chat_id, "❌ Гуруҳга юборилмади. Бот ҳуқуқлари ва TARGET_CHAT_ID ни текширинг.", reply_to_message_id=msg["message_id"])
+        logging.exception("Receipt was sent to group and saved, but sender notification failed")
     return {"ok": True}
 
 if __name__ == "__main__":
