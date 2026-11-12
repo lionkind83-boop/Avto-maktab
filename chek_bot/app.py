@@ -16,8 +16,11 @@ OWNER = os.environ.get("OWNER_USER_ID", "")
 API = f"https://api.telegram.org/bot{TOKEN}"
 DB = os.environ.get("SQLITE_PATH", "/tmp/chek_bot_seen.sqlite3")
 
-def send(chat, message):
-    requests.post(API + "/sendMessage", json={"chat_id": chat, "text": message, "disable_web_page_preview": True}, timeout=20).raise_for_status()
+def send(chat, message, reply_to_message_id=None):
+    payload = {"chat_id": chat, "text": message, "disable_web_page_preview": True}
+    if reply_to_message_id is not None:
+        payload["reply_parameters"] = {"message_id": reply_to_message_id}
+    requests.post(API + "/sendMessage", json=payload, timeout=20).raise_for_status()
 
 def normalize_qr(raw):
     raw = raw.strip()
@@ -307,27 +310,27 @@ def webhook():
             record_result(msg, status, file_id=locals().get("file_id"))
             logging.info("Receipt QR result: message_id=%s status=%s", msg.get("message_id"), status)
             if status == "non_ofd":
-                send(chat_id, "⚠️ QR-код ўқилди, лекин OFD фискал чек ҳаволаси эмас. Фискал чек QR-кодини юборинг.")
+                send(chat_id, "⚠️ QR-код ўқилди, лекин OFD фискал чек ҳаволаси эмас. Фискал чек QR-кодини юборинг.", reply_to_message_id=msg["message_id"])
             elif status == "invalid_image":
-                send(chat_id, "❌ Расм файлини очиб бўлмади. JPG ёки PNG форматда юборинг.")
+                send(chat_id, "❌ Расм файлини очиб бўлмади. JPG ёки PNG форматда юборинг.", reply_to_message_id=msg["message_id"])
             else:
-                send(chat_id, "📝 QR-код ўқилмади. Чек базага сақланди ва қўлда текшириш рўйхатига қўшилди. /review")
+                send(chat_id, "📝 QR-код ўқилмади. Чек базага сақланди ва қўлда текшириш рўйхатига қўшилди. /review", reply_to_message_id=msg["message_id"])
         else:
             send(chat_id, "OFD чек ҳаволасини ёки QR-кодли чек расмини юборинг.")
         return {"ok": True}
     if seen(link):
         record_result(msg, "duplicate", link, locals().get("file_id"))
-        send(chat_id, "Бу чек аввал қайд этилган. OFD ҳаволаси гуруҳга қайта юборилмади.")
+        send(chat_id, "Бу чек аввал қайд этилган. OFD ҳаволаси гуруҳга қайта юборилмади.", reply_to_message_id=msg["message_id"])
         return {"ok": True}
     try:
         send(TARGET, "🧾 Янги фискал чек\n" + link)
         remember(link)
         record_result(msg, "read", link, locals().get("file_id"))
-        send(chat_id, "✅ OFD ҳаволаси гуруҳга юборилди.")
+        send(chat_id, "✅ OFD ҳаволаси гуруҳга юборилди.", reply_to_message_id=msg["message_id"])
     except Exception:
         logging.exception("Send failed")
         record_result(msg, "send_failed", link, locals().get("file_id"))
-        send(chat_id, "❌ Гуруҳга юборилмади. Бот ҳуқуқлари ва TARGET_CHAT_ID ни текширинг.")
+        send(chat_id, "❌ Гуруҳга юборилмади. Бот ҳуқуқлари ва TARGET_CHAT_ID ни текширинг.", reply_to_message_id=msg["message_id"])
     return {"ok": True}
 
 if __name__ == "__main__":
