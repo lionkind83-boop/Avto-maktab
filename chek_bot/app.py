@@ -103,7 +103,7 @@ def decode_photo(photo):
                 try:
                     results = zxingcpp.read_barcodes(variant,
                         formats=zxingcpp.BarcodeFormat.QRCode,
-                        try_rotate=True, try_downscale=False, try_invert=True)
+                        try_rotate=True, try_downscale=False)
                     for result in results:
                         link = normalize_qr(result.text)
                         if link:
