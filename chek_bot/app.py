@@ -22,6 +22,52 @@ def send(chat, message, reply_to_message_id=None):
         payload["reply_parameters"] = {"message_id": reply_to_message_id}
     requests.post(API + "/sendMessage", json=payload, timeout=20).raise_for_status()
 
+def send_review_prompt(chat, message_id, message):
+    payload = {
+        "chat_id": chat, "text": message, "disable_web_page_preview": True,
+        "reply_parameters": {"message_id": message_id},
+        "reply_markup": {"inline_keyboard": [[
+            {"text": "🔄 Шу чекни қайта ўқиш", "callback_data": f"retry_one:{message_id}"},
+            {"text": "📝 Қўлда текшириш", "callback_data": f"review_one:{message_id}"}
+        ]]}
+    }
+    requests.post(API + "/sendMessage", json=payload, timeout=20).raise_for_status()
+
+def handle_receipt_callback(update):
+    callback = update["callback_query"]
+    callback_id = callback["id"]
+    actor = str(callback.get("from", {}).get("id", ""))
+    data = callback.get("data", "")
+    answer = "Рухсат йўқ."
+    if OWNER and actor == OWNER and re.fullmatch(r"(retry_one|review_one):[0-9]+", data):
+        action, raw_id = data.split(":", 1)
+        receipt_id = int(raw_id)
+        rows = [row for row in store("report") if int(row["message_id"]) == receipt_id]
+        if not rows:
+            answer = "Чек базада топилмади."
+        elif action == "review_one":
+            answer = f"Чек №{receipt_id} қўлда текшириш рўйхатида. /review"
+        elif rows[0].get("status") not in ("manual_review", "unreadable", "invalid_image"):
+            answer = "Бу чек қайта ўқишга муҳтож эмас."
+        else:
+            file_id = rows[0].get("file_id")
+            if not file_id:
+                answer = "Расм файли топилмади. Чекни қайта юборинг."
+            else:
+                link, status = decode_photo(fetch_telegram_image(file_id))
+                # Audit-only: never send or resend links to the group from this button.
+                if link:
+                    status = "duplicate" if seen(link) else "manual_review"
+                    answer = "QR ўқилди. OFD ҳаволаси қўлда тасдиқланиши керак."
+                else:
+                    status = "manual_review"
+                    answer = "QR ҳали ўқилмади. Қўлда текширинг."
+                record_result({"message_id": receipt_id}, status, link or "", file_id)
+    requests.post(API + "/answerCallbackQuery",
+                  json={"callback_query_id": callback_id, "text": answer[:200], "show_alert": True},
+                  timeout=15).raise_for_status()
+    return {"ok": True}
+
 def normalize_qr(raw):
     raw = raw.strip()
     match = re.search(r"https?://[^\s]+", raw)
@@ -238,6 +284,8 @@ def webhook():
     if not TOKEN or request.headers.get("X-Telegram-Bot-Api-Secret-Token") != SECRET:
         abort(403)
     update = request.get_json(silent=True) or {}
+    if update.get("callback_query"):
+        return handle_receipt_callback(update)
     msg = update.get("message") or {}
     chat = msg.get("chat") or {}
     chat_id = chat.get("id")
@@ -314,7 +362,7 @@ def webhook():
             elif status == "invalid_image":
                 send(chat_id, "❌ Расм файлини очиб бўлмади. JPG ёки PNG форматда юборинг.", reply_to_message_id=msg["message_id"])
             else:
-                send(chat_id, "📝 QR-код ўқилмади. Чек базага сақланди ва қўлда текшириш рўйхатига қўшилди. /review", reply_to_message_id=msg["message_id"])
+                send_review_prompt(chat_id, msg["message_id"], "📝 QR-код ўқилмади. Чек базага сақланди ва қўлда текшириш рўйхатига қўшилди. /review")
         else:
             send(chat_id, "OFD чек ҳаволасини ёки QR-кодли чек расмини юборинг.")
         return {"ok": True}
@@ -341,7 +389,7 @@ if TOKEN and PUBLIC_URL:
     try:
         probe = requests.get(API + "/getMe", timeout=12)
         logging.info("Telegram getMe: HTTP %s; reason: %s", probe.status_code, probe.json().get("description", "ok") if probe.headers.get("content-type", "").startswith("application/json") else "non-JSON response")
-        result = requests.post(API + "/setWebhook", json={"url": PUBLIC_URL + "/webhook", "secret_token": SECRET, "allowed_updates": ["message"]}, timeout=12)
+        result = requests.post(API + "/setWebhook", json={"url": PUBLIC_URL + "/webhook", "secret_token": SECRET, "allowed_updates": ["message", "callback_query"]}, timeout=12)
         if not result.ok or not result.json().get("ok"):
             logging.error("Telegram webhook registration failed (HTTP %s; reason: %s)", result.status_code, (result.json().get("description", "unknown") if result.headers.get("content-type","").startswith("application/json") else "non-JSON response"))
         else:
