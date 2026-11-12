@@ -31,7 +31,14 @@ def send_review_prompt(chat, message_id, message):
             {"text": "📝 Қўлда текшириш", "callback_data": f"review_one:{message_id}"}
         ]]}
     }
-    requests.post(API + "/sendMessage", json=payload, timeout=20).raise_for_status()
+    response = requests.post(API + "/sendMessage", json=payload, timeout=20)
+    if not response.ok:
+        # Telegram can reject inline keyboards or reply targets. Do not fail the webhook.
+        logging.warning("Review prompt rejected by Telegram: status=%s", response.status_code)
+        try:
+            send(chat, message, reply_to_message_id=message_id)
+        except Exception:
+            logging.exception("Review prompt fallback failed: message_id=%s", message_id)
 
 def handle_receipt_callback(update):
     callback = update["callback_query"]
